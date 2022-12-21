@@ -1,0 +1,28 @@
+From 75242f3d7dfe69b5afbe14df1cff834fb6da0c51 Mon Sep 17 00:00:00 2001
+From: google <android@google.com>
+Date: Tue, 28 Mar 2023 16:38:41 -0700
+Subject: [PATCH] u2
+
+---
+ arch/arm64/kernel/Makefile | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/arch/arm64/kernel/Makefile b/arch/arm64/kernel/Makefile
+index cd3597a..027a838 100644
+--- a/arch/arm64/kernel/Makefile
++++ b/arch/arm64/kernel/Makefile
+@@ -28,10 +28,7 @@ $(obj)/%.stub.o: $(obj)/%.o FORCE
+ 	$(call if_changed,objcopy)
+ 
+ arm64-obj-$(CONFIG_COMPAT)		+= sys32.o signal32.o	\
+-					   sys_compat.o entry32.o
+-ifneq ($(CONFIG_VDSO32),y)
+-arm64-obj-$(CONFIG_COMPAT)		+= sigreturn32.o
+-endif
++					   sys_compat.o entry32.o sigreturn32.o
+ arm64-obj-$(CONFIG_KUSER_HELPERS)	+= kuser32.o
+ arm64-obj-$(CONFIG_FUNCTION_TRACER)	+= ftrace.o entry-ftrace.o
+ arm64-obj-$(CONFIG_MODULES)		+= arm64ksyms.o module.o
+-- 
+2.7.4
+

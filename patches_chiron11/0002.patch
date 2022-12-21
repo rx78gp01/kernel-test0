@@ -1,0 +1,154 @@
+From 82353b356bb107ae6e2d893444f99efc0991183d Mon Sep 17 00:00:00 2001
+From: google <android@google.com>
+Date: Tue, 28 Mar 2023 15:41:55 -0700
+Subject: [PATCH] update vdso
+
+u
+---
+ arch/arm64/kernel/vdso/Makefile   | 17 +++++++----------
+ arch/arm64/kernel/vdso32/Makefile | 35 +++++++++++++----------------------
+ 2 files changed, 20 insertions(+), 32 deletions(-)
+
+diff --git a/arch/arm64/kernel/vdso/Makefile b/arch/arm64/kernel/vdso/Makefile
+index 4adcb53..40bb307 100644
+--- a/arch/arm64/kernel/vdso/Makefile
++++ b/arch/arm64/kernel/vdso/Makefile
+@@ -14,10 +14,11 @@ obj-vdso-s := $(addprefix $(obj)/, $(obj-vdso-s))
+ obj-vdso-c := $(addprefix $(obj)/, $(obj-vdso-c))
+ obj-vdso   := $(obj-vdso-c) $(obj-vdso-s)
+ 
+-ccflags-y := -shared -fno-common -fno-builtin -fno-stack-protector
++ldflags-y := -shared -nostdlib -soname=linux-vdso.so.1  --hash-style=sysv \
++		--build-id -n -T
++ccflags-y := -shared -fno-common -fno-stack-protector
+ ccflags-y += -DDISABLE_BRANCH_PROFILING -ffixed-x18
+-ccflags-y += -nostdlib -Wl,-soname=linux-vdso.so.1 \
+-		$(call cc-ldoption, -Wl$(comma)--hash-style=sysv)
++ccflags-y += $(call cc-option, -fno-whole-program)
+ 
+ # Force -O2 to avoid libgcc dependencies
+ CFLAGS_REMOVE_vgettimeofday.o = -pg -Os
+@@ -26,16 +27,14 @@ ifneq ($(cc-name),clang)
+ CFLAGS_vgettimeofday.o += -mcmodel=tiny
+ endif
+ 
++CFLAGS_REMOVE_vgettimeofday.o += $(CC_FLAGS_SCS)
++
+ # Disable gcov profiling for VDSO code
+ GCOV_PROFILE := n
+ KASAN_SANITIZE := n
+ UBSAN_SANITIZE := n
+ KCOV_INSTRUMENT := n
+ 
+-# Workaround for bare-metal (ELF) toolchains that neglect to pass -shared
+-# down to collect2, resulting in silent corruption of the vDSO image.
+-ccflags-y += -Wl,-shared
+-
+ obj-y += vdso.o
+ extra-y += vdso.lds
+ CPPFLAGS_vdso.lds += -P -C -U$(ARCH)
+@@ -45,7 +44,7 @@ $(obj)/vdso.o : $(obj)/vdso.so
+ 
+ # Link rule for the .so file, .lds has to be first
+ $(obj)/vdso.so.dbg: $(src)/vdso.lds $(obj-vdso)
+-	$(call if_changed,vdsold)
++	$(call if_changed,ld)
+ 
+ # Strip rule for the .so file
+ $(obj)/%.so: OBJCOPYFLAGS := -S
+@@ -70,8 +69,6 @@ $(obj-vdso-c): %.o: %.c FORCE
+ 	$(call if_changed_dep,vdsocc)
+ 
+ # Actual build commands
+-quiet_cmd_vdsold = VDSOL   $@
+-      cmd_vdsold = $(CC) $(c_flags) -Wl,-n -Wl,-T $^ -o $@
+ quiet_cmd_vdsocc = VDSOC   $@
+       cmd_vdsocc = ${CC} $(c_flags) -c -o $@ $<
+ quiet_cmd_vdsoas = VDSOA   $@
+diff --git a/arch/arm64/kernel/vdso32/Makefile b/arch/arm64/kernel/vdso32/Makefile
+index 807d08e..5508fed 100644
+--- a/arch/arm64/kernel/vdso32/Makefile
++++ b/arch/arm64/kernel/vdso32/Makefile
+@@ -5,22 +5,22 @@
+ # A mix between the arm64 and arm vDSO Makefiles.
+ 
+ ifeq ($(cc-name),clang)
+-  CC_ARM32 := $(CC) $(CLANG_TARGET_ARM32) -no-integrated-as
+-  GCC_ARM32_TC := $(realpath $(dir $(shell which $(CROSS_COMPILE_ARM32)ld))/..)
+-ifneq ($(GCC_ARM32_TC),)
+-  CC_ARM32 += --gcc-toolchain=$(GCC_ARM32_TC)
+-endif
++  CC_ARM32 := $(CC) $(CLANG_TARGET_ARM32) $(CLANG_PREFIX32)
+ else
+   CC_ARM32 := $(CROSS_COMPILE_ARM32)$(cc-name)
+ endif
+ 
++ifeq ($(cc-name),clang)
++LD_COMPAT ?= $(LD)
++else
++LD_COMPAT ?= $(CROSS_COMPILE_COMPAT)ld
++endif
++
+ # Same as cc-*option, but using CC_ARM32 instead of CC
+ cc32-option = $(call try-run,\
+         $(CC_ARM32) $(1) -c -x c /dev/null -o "$$TMP",$(1),$(2))
+ cc32-disable-warning = $(call try-run,\
+ 	$(CC_ARM32) -W$(strip $(1)) -c -x c /dev/null -o "$$TMP",-Wno-$(strip $(1)))
+-cc32-ldoption = $(call try-run,\
+-        $(CC_ARM32) $(1) -nostdlib -x c /dev/null -o "$$TMP",$(1),$(2))
+ 
+ # We cannot use the global flags to compile the vDSO files, the main reason
+ # being that the 32-bit compiler may be older than the main (64-bit) compiler
+@@ -33,9 +33,7 @@ cc32-ldoption = $(call try-run,\
+ # NOSTDINC_FLAGS
+ VDSO_CPPFLAGS := -nostdinc -isystem $(shell $(CC_ARM32) -print-file-name=include)
+ VDSO_CPPFLAGS += $(LINUXINCLUDE)
+-VDSO_CPPFLAGS += -D__KERNEL__
+-VDSO_CPPFLAGS += $(call cc-option,-Qunused-arguments,)
+-VDSO_CPPFLAGS += $(ARCH_CPPFLAGS) $(KCPPFLAGS)
++VDSO_CPPFLAGS += $(KBUILD_CPPFLAGS)
+ 
+ # Common C and assembly flags
+ # From top-level Makefile
+@@ -44,9 +42,6 @@ VDSO_CAFLAGS += $(call cc32-option,-fno-PIE)
+ ifdef CONFIG_DEBUG_INFO
+ VDSO_CAFLAGS += -g
+ endif
+-ifeq ($(shell $(CONFIG_SHELL) $(srctree)/scripts/gcc-goto.sh $(CC_ARM32)), y)
+-VDSO_CAFLAGS += -DCC_HAVE_ASM_GOTO
+-endif
+ 
+ # From arm Makefile
+ VDSO_CAFLAGS += $(call cc32-option,-fno-dwarf2-cfi-asm)
+@@ -96,14 +91,10 @@ VDSO_CFLAGS += -Wno-int-to-pointer-cast
+ VDSO_AFLAGS := $(VDSO_CAFLAGS)
+ VDSO_AFLAGS += -D__ASSEMBLY__
+ 
+-VDSO_LDFLAGS := $(VDSO_CPPFLAGS)
+ # From arm vDSO Makefile
+-VDSO_LDFLAGS += -Wl,-Bsymbolic -Wl,--no-undefined -Wl,-soname=linux-vdso.so.1
+-VDSO_LDFLAGS += -Wl,-z,max-page-size=4096 -Wl,-z,common-page-size=4096
+-VDSO_LDFLAGS += -nostdlib -shared -mfloat-abi=soft
+-VDSO_LDFLAGS += $(call cc32-ldoption,-Wl$(comma)--hash-style=sysv)
+-VDSO_LDFLAGS += $(call cc32-ldoption,-Wl$(comma)--build-id)
+-VDSO_LDFLAGS += $(call cc32-ldoption,-fuse-ld=bfd)
++VDSO_LDFLAGS += -Bsymbolic --no-undefined -soname=linux-vdso.so.1
++VDSO_LDFLAGS += -z max-page-size=4096 -z common-page-size=4096
++VDSO_LDFLAGS += -nostdlib -shared --hash-style=sysv --build-id
+ 
+ 
+ # Borrow vdsomunge.c from the arm vDSO
+@@ -151,8 +142,8 @@ $(asm-obj-vdso): %.o: %.S FORCE
+ 
+ # Actual build commands
+ quiet_cmd_vdsold = VDSOL32   $@
+-      cmd_vdsold = $(CC_ARM32) -Wp,-MD,$(depfile) $(VDSO_LDFLAGS) \
+-                   -Wl,-T $(filter %.lds,$^) $(filter %.o,$^) -o $@
++      cmd_vdsold = $(LD_COMPAT) $(VDSO_LDFLAGS) \
++                   -T $(filter %.lds,$^) $(filter %.o,$^) -o $@
+ quiet_cmd_vdsocc = VDSOC32   $@
+       cmd_vdsocc = $(CC_ARM32) -Wp,-MD,$(depfile) $(VDSO_CFLAGS) -c -o $@ $<
+ quiet_cmd_vdsoas = VDSOA32   $@
+-- 
+2.7.4
+
