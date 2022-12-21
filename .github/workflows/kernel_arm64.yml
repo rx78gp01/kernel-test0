@@ -1,0 +1,149 @@
+# Build kernel using GitHub Actions
+
+name: Build kernel arm64
+
+on:
+  workflow_dispatch:
+
+env:
+  REPO_URL: https://github.com/rx78gp01/kenzo.git
+  REPO_BRANCH: nougat-mr2
+  REPO_BRANCH_VER: 1
+  REPO_TAG: nougat-mr2
+  ARCH: arm64
+  DEFCONFIG: franco_defconfig
+  REPO_DEPTH: 1
+  TOOLCHAIN_URL: https://github.com/rx78gp01/toolchain.git
+  TOOLCHAIN_TAG: gcc49
+  KERNEL_NAME: Image.gz-dtb
+  FILES_PATH: files
+  PATCHES_PATH: patches
+  UPLOAD_RELEASE: true
+  USE_CCACHE: false
+  TZ: UTC
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@main
+      with:
+        fetch-depth: 1
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo rm -rf /etc/apt/sources.list.d/* /usr/share/dotnet /usr/local/lib/android /opt/ghc
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential ccache ecj fastjar file g++ gawk \
+        gettext git java-propose-classpath libelf-dev libncurses5-dev \
+        libncursesw5-dev libssl-dev python python2.7-dev python3 unzip wget \
+        python3-distutils python3-setuptools python3-dev rsync subversion \
+        swig time xsltproc zlib1g-dev libboost-dev zip \
+        gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib \
+        libc6-dev lib32ncurses5-dev x11proto-core-dev libx11-dev tree \
+        lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc lib32readline-dev \
+        lib32z1-dev liblz4-tool libsdl1.2-dev libwxgtk3.0-gtk3-dev \
+        libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev \
+        lzma ncftp qemu-user-static libstdc++-10-dev
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p /workdir
+        sudo chown $USER:$GROUPS /workdir
+
+    - name: Clone kernel source code
+      working-directory: /workdir
+      run: |
+        [ $REPO_DEPTH -ge 1 ] && git clone --depth $REPO_DEPTH --branch $REPO_BRANCH --single-branch $REPO_URL kernel
+        [ $REPO_DEPTH -eq 0 ] && git clone --branch $REPO_TAG --single-branch $REPO_URL kernel
+        ln -sf /workdir/kernel $GITHUB_WORKSPACE/kernel
+
+    - name: Cache kernel toolchain
+      id: cache-kernel-toolchain
+      uses: rx78gp01/cache@main
+      env:
+        cache-name: cache-kernel
+      with:
+        path: |
+          kernel/toolchain
+          kernel/out
+        key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.REPO_BRANCH }}-${{ env.ARCH }}
+        restore-keys: |
+          ${{ runner.os }}-build-${{ env.cache-name }}-${{ env.REPO_BRANCH }}
+    
+    - name: Check cache
+      run: |
+        [ -d kernel/toolchain ] && echo "Found toolchain cache" || echo "No toolchain cache"
+        [ -d kernel/out ] && echo "Found kernel cache" || echo "No kernel cache"
+        ls -al kernel
+
+    - name: Clone toolchain
+      if: steps.cache-kernel-toolchain.outputs.cache-hit != 'true'
+      working-directory: /workdir
+      run: |
+        cd kernel
+        git clone --depth 1 --branch $TOOLCHAIN_TAG --single-branch $TOOLCHAIN_URL toolchain
+
+    - name: Apply patches
+      run: |
+        [ -d $PATCHES_PATH ] && mv $PATCHES_PATH kernel/$PATCHES_PATH
+        cd kernel
+        [ -d $PATCHES_PATH ] && for FILE in $(ls $PATCHES_PATH | grep .patch); do git apply --check $PATCHES_PATH/$FILE; git apply $PATCHES_PATH/$FILE; done
+        git status -s
+
+    - name: Load custom files
+      run: |
+        [ -d $FILES_PATH ] && mv $FILES_PATH kernel/files
+        cd kernel && git status -s
+
+    - name: Setup ccache
+      uses: Chocobo1/setup-ccache-action@v1
+      if: env.USE_CCACHE == 'true'
+      with:
+          install_ccache: false
+          update_packager_index: false
+
+    - name: Compile the kernel
+      id: compile
+      run: |
+        export CROSS_COMPILE=/workdir/kernel/toolchain/aarch64-linux-android-4.9/bin/aarch64-linux-android-
+        cd kernel
+        [ -e .version ] && rm .version
+        [ ! -d out ] && mkdir out
+        make O=out ARCH=${ARCH} ${DEFCONFIG}
+        echo -e "Available core: $(nproc)"
+        COMPILE_THREADS=$(($(nproc) + 1))
+        echo "Compile threads: ${COMPILE_THREADS}"
+        make O=out ARCH=${ARCH} KCFLAGS=-mno-android -j${COMPILE_THREADS} 2>&1 | tee build.log || make O=out ARCH=${ARCH} KCFLAGS=-mno-android -j1 2>&1 | tee build_j1.log
+        [ -f out/arch/${ARCH}/boot/${KERNEL_NAME} ] && echo "status=success" >> $GITHUB_OUTPUT
+        cd out
+        zip -q arch/${ARCH}/boot/log.zip build.log build_j1.log .config
+        zip -q arch/${ARCH}/boot/vmlinux_debug.zip vmlinux
+        echo "Make Completed"
+
+    - name: Prepare release
+      if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
+      run: |
+        touch release.txt
+        echo "Branch: $REPO_BRANCH" >> release.txt
+        echo "TAG: $REPO_TAG" >> release.txt
+        echo "Date: $(date +"%Y-%m-%d_%H:%M")" >> release.txt
+        echo "Arch: $ARCH" >> release.txt
+        cd kernel/out/arch/${ARCH}/boot/
+        echo "KERNEL_PATH=$PWD" >> $GITHUB_ENV
+        echo "TAG_DATE=$(date +"%Y-%m-%d_%H_%M")" >> $GITHUB_ENV
+
+    - name: Upload release
+      uses: softprops/action-gh-release@v1
+      if: env.UPLOAD_RELEASE == 'true' && steps.compile.outputs.status == 'success' && !cancelled()
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ env.REPO_BRANCH }}_${{ env.ARCH }}
+        body_path: release.txt
+        files: |
+            ${{ env.KERNEL_PATH }}/${{ env.KERNEL_NAME }}
+            ${{ env.KERNEL_PATH }}/vmlinux_debug.zip
+            ${{ env.KERNEL_PATH }}/log.zip
