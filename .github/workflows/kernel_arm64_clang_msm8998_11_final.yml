@@ -7,9 +7,9 @@ on:
 
 env:
   REPO_URL: https://github.com/rx78gp01/android_kernel_xiaomi_msm8998.git
-  REPO_BRANCH: lineage-18.1
+  REPO_BRANCH: lineage-18.1_new
   REPO_BRANCH_VER: 11.0.0
-  REPO_TAG: lineage-18.1
+  REPO_TAG: lineage-18.1_new
   ARCH: arm64
   DEVICE_NAME: chiron
   DEFCONFIG: chiron_defconfig
